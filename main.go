@@ -1,7 +1,6 @@
 package main
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,14 +10,16 @@ import (
 
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-var db *sql.DB
+var db *gorm.DB
 
 type User struct {
-	ID    int    `json: "id"`
-	Name  string `json:	"name"`
-	Email string `json: "email`
+	Id    int    `column: "id"`
+	Name  string `column: "name"`
+	Email string `column: "email"`
 }
 
 func main() {
@@ -37,19 +38,19 @@ func handlerHomePage(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Your server is fucking running")
 }
 
-func GetDB() *sql.DB {
+func GetDB() *gorm.DB {
 	var err error
 
 	log.Println("Getting DB")
 	psqlInfo := fmt.Sprintf("host=%s port=%d user=%s "+
 		"password=%s dbname=%s sslmode=disable",
 		"localhost", 5432, "postgres", "123", "testdb")
-	db, err = sql.Open("postgres", psqlInfo)
+	db, err = gorm.Open(postgres.Open(psqlInfo), &gorm.Config{})
+
 	if err != nil {
 		log.Println("Err while getting DB")
 		panic(err)
 	}
-
 	return db
 }
 
@@ -60,24 +61,17 @@ func GetDB() *sql.DB {
 // @Success 200 {object} User
 // @Router /getUsers [get]
 func getUsers(w http.ResponseWriter, r *http.Request) {
-	var user User
 	var userList []User
 
+	log.Println("Init query")
 	db := GetDB()
-	log.Println(db.Ping())
-	rows, err := db.Query("SELECT * FROM users")
-
+	log.Println("Finish Getting DB")
+	err := db.Find(&userList).Error
+	log.Println(err)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-	log.Println(rows)
 
-	for rows.Next() {
-		log.Println(1)
-		rows.Scan(&user.ID, &user.Name, &user.Email)
-		userList = append(userList, user)
-	}
 	w.WriteHeader(http.StatusOK)
 
 	json.NewEncoder(w).Encode(userList)
@@ -96,18 +90,17 @@ func getUser(w http.ResponseWriter, r *http.Request) {
 	id := vars["id"]
 
 	db := GetDB()
-	err := db.QueryRow("SELECT * FROM users WHERE \"Id\" = $1", id).Scan(&user.ID, &user.Name, &user.Email)
+	err := db.First(&user, id).Error
 
 	if err != nil {
 		log.Println(err)
-		if user.ID == 0 {
+		if user.Id == 0 {
 			fmt.Fprintln(w, "The requested user does not exist")
 		} else {
 			fmt.Fprintln(w, "Something's wrong")
 		}
 		return
 	}
-	defer db.Close()
 	w.WriteHeader(http.StatusOK)
 
 	json.NewEncoder(w).Encode(user)
@@ -125,8 +118,7 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 
 	json.NewDecoder(r.Body).Decode(&newUser)
 	log.Println(newUser)
-	_, err := db.Exec("INSERT INTO public.users(\"Name\", \"Email\") VALUES ($1, $2)", newUser.Name, newUser.Email)
-	defer db.Close()
+	err := db.Create(&newUser).Error
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -146,24 +138,31 @@ func createUser(w http.ResponseWriter, r *http.Request) {
 // @Router /updateUser [post]
 func updateUser(w http.ResponseWriter, r *http.Request) {
 	var user User
+	var oldUser User
 	db := GetDB()
 
 	json.NewDecoder(r.Body).Decode(&user)
 	log.Println(user)
-	_, err := db.Exec("UPDATE public.users SET \"Name\"=$1, \"Email\"=$2	WHERE \"Id\" = $3;", user.Name, user.Email, user.ID)
-	defer db.Close()
+	err1 := db.First(&oldUser, user.Id).Error
 
-	if err != nil {
+	if err1 != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		if user.ID == 0 {
-			fmt.Fprintln(w, "The requested user does not exist")
-		} else {
-			fmt.Fprintln(w, "Something's wrong")
-		}
+		fmt.Fprintln(w, "Somethings's wrong upon retrieving the data")
 		return
+	} else {
+		oldUser = user
+		err := db.Save(&oldUser).Error
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			if user.Id == 0 {
+				fmt.Fprintln(w, "The requested user does not exist")
+			} else {
+				fmt.Fprintln(w, "Something's wrong")
+			}
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}
-	w.WriteHeader(http.StatusOK)
-
 	fmt.Fprint(w, "Success")
 }
 
@@ -175,11 +174,11 @@ func updateUser(w http.ResponseWriter, r *http.Request) {
 // @Success 200 {object} User
 // @Router /deleteUser/{id} [get]
 func deleteUser(w http.ResponseWriter, r *http.Request) {
+	var user User
 	vars := mux.Vars(r)
 	id := vars["id"]
 	db := GetDB()
-	_, err := db.Exec("DELETE FROM public.users	WHERE \"Id\"=$1;", id)
-	defer db.Close()
+	err := db.Delete(&user, id).Error
 
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
